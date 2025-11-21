@@ -168,22 +168,25 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
     }
 
     private fun getDeviceId(): String {
-        // Use MediaDRM ID as the primary device identifier
-        // This is truly device-unique (same across all users/apps on the device)
+        // Combine multiple identifiers to create a composite device ID
+        // MediaDRM alone has ~2.5% collision rate, so we add device properties
+        // to make collisions virtually impossible
 
-        // 1. Try MediaDRM ID first (most reliable, factory-provisioned)
+        val components = mutableListOf<String>()
+
+        // 1. MediaDRM ID (factory-provisioned, but can have collisions)
         try {
             val mediaDrmId = getMediaDrmId()
             if (mediaDrmId.isNotEmpty()) {
-                return hashString(mediaDrmId)
+                components.add(mediaDrmId)
             }
         } catch (e: Exception) {
-            // MediaDRM not available (rare on modern devices)
+            // MediaDRM not available
         }
 
-        // 2. Fallback to Build properties hash (less ideal but still device-bound)
-        // This combines hardware identifiers that are the same for all users
-        val fallbackId = listOf(
+        // 2. Hardware properties (same for all users on device)
+        // These reduce collision probability dramatically
+        components.addAll(listOf(
             Build.BOARD,
             Build.BOOTLOADER,
             Build.BRAND,
@@ -192,9 +195,26 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
             Build.MANUFACTURER,
             Build.MODEL,
             Build.PRODUCT
-        ).joinToString("|")
+        ))
 
-        return hashString(fallbackId)
+        // Add SoC info for API 31+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            components.add(Build.SOC_MANUFACTURER)
+            components.add(Build.SOC_MODEL)
+        }
+
+        // 3. Display metrics (further differentiation)
+        try {
+            val displayMetrics = context.resources.displayMetrics
+            components.add("${displayMetrics.widthPixels}x${displayMetrics.heightPixels}")
+            components.add("${displayMetrics.densityDpi}")
+        } catch (e: Exception) {
+            // Display info not available
+        }
+
+        // Combine all components into a single hash
+        val combined = components.joinToString("|")
+        return hashString(combined)
     }
 
     private fun getMediaDrmId(): String {
