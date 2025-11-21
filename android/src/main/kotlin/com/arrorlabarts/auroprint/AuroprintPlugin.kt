@@ -3,7 +3,6 @@ package com.arrorlabarts.auroprint
 import android.content.Context
 import android.media.MediaDrm
 import android.os.Build
-import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -169,40 +168,33 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
     }
 
     private fun getDeviceId(): String {
-        // Combine multiple identifiers for better persistence
-        val components = mutableListOf<String>()
+        // Use MediaDRM ID as the primary device identifier
+        // This is truly device-unique (same across all users/apps on the device)
 
-        // 1. MediaDRM ID (most persistent, survives factory reset on some devices)
+        // 1. Try MediaDRM ID first (most reliable, factory-provisioned)
         try {
             val mediaDrmId = getMediaDrmId()
             if (mediaDrmId.isNotEmpty()) {
-                components.add(mediaDrmId)
+                return hashString(mediaDrmId)
             }
         } catch (e: Exception) {
-            // MediaDRM not available
+            // MediaDRM not available (rare on modern devices)
         }
 
-        // 2. Android ID (persists across app reinstalls, changes on factory reset)
-        try {
-            val androidId = Settings.Secure.getString(
-                context.contentResolver,
-                Settings.Secure.ANDROID_ID
-            )
-            if (!androidId.isNullOrEmpty()) {
-                components.add(androidId)
-            }
-        } catch (e: Exception) {
-            // Android ID not available
-        }
+        // 2. Fallback to Build properties hash (less ideal but still device-bound)
+        // This combines hardware identifiers that are the same for all users
+        val fallbackId = listOf(
+            Build.BOARD,
+            Build.BOOTLOADER,
+            Build.BRAND,
+            Build.DEVICE,
+            Build.HARDWARE,
+            Build.MANUFACTURER,
+            Build.MODEL,
+            Build.PRODUCT
+        ).joinToString("|")
 
-        // 3. Build fingerprint as fallback
-        if (components.isEmpty()) {
-            components.add(Build.FINGERPRINT)
-        }
-
-        // Create a hash of all components
-        val combined = components.joinToString("|")
-        return hashString(combined)
+        return hashString(fallbackId)
     }
 
     private fun getMediaDrmId(): String {
