@@ -27,4 +27,11 @@ abstract class AuroprintPlatform extends PlatformInterface {
   Future<void> resetKey() {
     throw UnimplementedError('resetKey() has not been implemented.');
   }
+
+  Future<String> requestIntegrityToken({
+    required String nonce,
+    int? cloudProjectNumber,
+  }) {
+    throw UnimplementedError('requestIntegrityToken() has not been implemented.');
+  }
 }

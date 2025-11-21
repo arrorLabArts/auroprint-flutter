@@ -50,4 +50,37 @@ class Auroprint {
   static Future<void> resetKey() {
     return AuroprintPlatform.instance.resetKey();
   }
+
+  /// Requests a Play Integrity token from Google (Android only).
+  ///
+  /// This token should be sent to your server and verified with Google's API
+  /// to check device integrity, app authenticity, and licensing status.
+  ///
+  /// Parameters:
+  /// - [nonce]: A unique request identifier (use the same nonce from generateAuroprint)
+  /// - [cloudProjectNumber]: Your Google Cloud project number (required for standard API)
+  ///
+  /// Returns the integrity token string to send to your server.
+  ///
+  /// Server verification: Use Google's playintegrity API to decode the token.
+  /// See: https://developer.android.com/google/play/integrity/verdict
+  ///
+  /// Example:
+  /// ```dart
+  /// final auroprint = await Auroprint.generateAuroprint();
+  /// final integrityToken = await Auroprint.requestIntegrityToken(
+  ///   nonce: auroprint.nonce,
+  ///   cloudProjectNumber: 123456789,
+  /// );
+  /// // Send both auroprint and integrityToken to server
+  /// ```
+  static Future<String> requestIntegrityToken({
+    required String nonce,
+    int? cloudProjectNumber,
+  }) {
+    return AuroprintPlatform.instance.requestIntegrityToken(
+      nonce: nonce,
+      cloudProjectNumber: cloudProjectNumber,
+    );
+  }
 }

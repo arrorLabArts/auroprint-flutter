@@ -8,6 +8,7 @@ Spoof-proof device fingerprint generation with hardware-backed cryptographic sig
 - **Key Attestation**: Certificate chain proving hardware backing (Android)
 - **Persistent device ID**: Survives app reinstalls (MediaDRM ID + Android ID / iOS Vendor ID)
 - **Anti-replay protection**: Timestamp and nonce in every request
+- **Play Integrity API**: Detect rooted/hooked devices (Android)
 
 ## Installation
 
@@ -33,6 +34,68 @@ final requestBody = {
   'publicKey': result.publicKey,
   'attestationChain': result.attestationChain,
 };
+```
+
+## Play Integrity API (Android)
+
+Detects rooted devices, Frida hooking, and verifies app authenticity.
+
+### Setup
+
+1. Enable Play Integrity API in [Google Cloud Console](https://console.cloud.google.com/apis/library/playintegrity.googleapis.com)
+2. Link your app in [Play Console](https://play.google.com/console) > App integrity
+3. Note your Cloud Project Number
+
+### Usage
+
+```dart
+// Generate fingerprint
+final auroprint = await Auroprint.generateAuroprint();
+
+// Request Play Integrity token
+final integrityToken = await Auroprint.requestIntegrityToken(
+  nonce: auroprint.nonce,
+  cloudProjectNumber: 123456789012, // Your project number
+);
+
+// Send both to server
+final requestBody = {
+  'payload': auroprint.payload,
+  'signature': auroprint.signature,
+  'publicKey': auroprint.publicKey,
+  'integrityToken': integrityToken,
+};
+```
+
+### Server Verification (Go)
+
+```go
+import (
+    "google.golang.org/api/playintegrity/v1"
+)
+
+func VerifyIntegrity(token string) error {
+    service, _ := playintegrity.NewService(ctx)
+
+    response, err := service.V1.DecodeIntegrityToken(
+        "com.yourapp.package",
+        &playintegrity.DecodeIntegrityTokenRequest{IntegrityToken: token},
+    ).Do()
+
+    verdict := response.TokenPayloadExternal
+
+    // Check device integrity
+    if verdict.DeviceIntegrity.DeviceRecognitionVerdict[0] != "MEETS_DEVICE_INTEGRITY" {
+        return errors.New("device integrity check failed")
+    }
+
+    // Check app integrity
+    if verdict.AppIntegrity.AppRecognitionVerdict != "PLAY_RECOGNIZED" {
+        return errors.New("app not from Play Store")
+    }
+
+    return nil
+}
 ```
 
 ## Server Verification (Go)

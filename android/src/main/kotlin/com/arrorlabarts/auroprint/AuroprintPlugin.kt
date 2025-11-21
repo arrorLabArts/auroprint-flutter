@@ -7,6 +7,8 @@ import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import com.google.android.play.core.integrity.IntegrityManagerFactory
+import com.google.android.play.core.integrity.IntegrityTokenRequest
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -49,6 +51,11 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
             "generateAuroprint" -> generateAuroprint(result)
             "isHardwareBackedAvailable" -> isHardwareBackedAvailable(result)
             "resetKey" -> resetKey(result)
+            "requestIntegrityToken" -> {
+                val nonce = call.argument<String>("nonce")
+                val cloudProjectNumber = call.argument<Long>("cloudProjectNumber")
+                requestIntegrityToken(nonce, cloudProjectNumber, result)
+            }
             else -> result.notImplemented()
         }
     }
@@ -264,6 +271,42 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
             result.success(null)
         } catch (e: Exception) {
             result.error("AUROPRINT_ERROR", e.message, null)
+        }
+    }
+
+    private fun requestIntegrityToken(nonce: String?, cloudProjectNumber: Long?, result: Result) {
+        if (nonce == null) {
+            result.error("AUROPRINT_ERROR", "Nonce is required", null)
+            return
+        }
+
+        try {
+            val integrityManager = IntegrityManagerFactory.create(context)
+
+            // Build the request
+            val requestBuilder = IntegrityTokenRequest.builder()
+                .setNonce(nonce)
+
+            // Add cloud project number if provided (required for standard API requests)
+            if (cloudProjectNumber != null) {
+                requestBuilder.setCloudProjectNumber(cloudProjectNumber)
+            }
+
+            val integrityTokenResponse = integrityManager.requestIntegrityToken(requestBuilder.build())
+
+            integrityTokenResponse.addOnSuccessListener { response ->
+                result.success(hashMapOf(
+                    "token" to response.token()
+                ))
+            }.addOnFailureListener { exception ->
+                result.error(
+                    "INTEGRITY_ERROR",
+                    exception.message,
+                    exception.stackTraceToString()
+                )
+            }
+        } catch (e: Exception) {
+            result.error("AUROPRINT_ERROR", e.message, e.stackTraceToString())
         }
     }
 }

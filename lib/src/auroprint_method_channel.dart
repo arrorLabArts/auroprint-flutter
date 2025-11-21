@@ -27,4 +27,25 @@ class MethodChannelAuroprint extends AuroprintPlatform {
   Future<void> resetKey() async {
     await _channel.invokeMethod<void>('resetKey');
   }
+
+  @override
+  Future<String> requestIntegrityToken({
+    required String nonce,
+    int? cloudProjectNumber,
+  }) async {
+    final result = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+      'requestIntegrityToken',
+      {
+        'nonce': nonce,
+        'cloudProjectNumber': cloudProjectNumber,
+      },
+    );
+    if (result == null || result['token'] == null) {
+      throw PlatformException(
+        code: 'NULL_RESULT',
+        message: 'Failed to get integrity token',
+      );
+    }
+    return result['token'] as String;
+  }
 }
