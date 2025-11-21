@@ -22,10 +22,15 @@ import java.security.Signature
 import java.security.cert.Certificate
 import java.security.cert.X509Certificate
 import java.util.UUID
+import java.util.concurrent.Executors
+import android.os.Handler
+import android.os.Looper
 
 class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
     private lateinit var channel: MethodChannel
     private lateinit var context: Context
+    private val executor = Executors.newCachedThreadPool()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     companion object {
         private const val CHANNEL_NAME = "com.arrorlabarts.auroprint/channel"
@@ -61,53 +66,59 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
     }
 
     private fun generateAuroprint(result: Result) {
-        try {
-            // Ensure key exists
-            ensureKeyExists()
+        executor.execute {
+            try {
+                // Ensure key exists
+                ensureKeyExists()
 
-            // Get persistent device ID
-            val deviceId = getDeviceId()
+                // Get persistent device ID
+                val deviceId = getDeviceId()
 
-            // Generate timestamp and nonce
-            val timestamp = System.currentTimeMillis() / 1000
-            val nonce = UUID.randomUUID().toString().replace("-", "")
+                // Generate timestamp and nonce
+                val timestamp = System.currentTimeMillis() / 1000
+                val nonce = UUID.randomUUID().toString().replace("-", "")
 
-            // Create payload
-            val payloadJson = JSONObject().apply {
-                put("did", deviceId)
-                put("ts", timestamp)
-                put("nonce", nonce)
+                // Create payload
+                val payloadJson = JSONObject().apply {
+                    put("did", deviceId)
+                    put("ts", timestamp)
+                    put("nonce", nonce)
+                }
+                val payload = payloadJson.toString()
+
+                // Sign the payload
+                val signature = signPayload(payload)
+
+                // Get public key and attestation chain
+                val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+                keyStore.load(null)
+                val certificateChain = keyStore.getCertificateChain(KEY_ALIAS)
+
+                val publicKeyPem = certificateToPem(certificateChain[0])
+                val attestationChain = certificateChain.map { certificateToPem(it) }
+
+                // Check if hardware-backed
+                val isHardwareBacked = isKeyHardwareBacked()
+
+                val response = hashMapOf(
+                    "deviceId" to deviceId,
+                    "payload" to payload,
+                    "signature" to signature,
+                    "publicKey" to publicKeyPem,
+                    "attestationChain" to attestationChain,
+                    "timestamp" to timestamp,
+                    "nonce" to nonce,
+                    "isHardwareBacked" to isHardwareBacked
+                )
+
+                mainHandler.post {
+                    result.success(response)
+                }
+            } catch (e: Exception) {
+                mainHandler.post {
+                    result.error("AUROPRINT_ERROR", e.message, e.stackTraceToString())
+                }
             }
-            val payload = payloadJson.toString()
-
-            // Sign the payload
-            val signature = signPayload(payload)
-
-            // Get public key and attestation chain
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
-            keyStore.load(null)
-            val certificateChain = keyStore.getCertificateChain(KEY_ALIAS)
-
-            val publicKeyPem = certificateToPem(certificateChain[0])
-            val attestationChain = certificateChain.map { certificateToPem(it) }
-
-            // Check if hardware-backed
-            val isHardwareBacked = isKeyHardwareBacked()
-
-            val response = hashMapOf(
-                "deviceId" to deviceId,
-                "payload" to payload,
-                "signature" to signature,
-                "publicKey" to publicKeyPem,
-                "attestationChain" to attestationChain,
-                "timestamp" to timestamp,
-                "nonce" to nonce,
-                "isHardwareBacked" to isHardwareBacked
-            )
-
-            result.success(response)
-        } catch (e: Exception) {
-            result.error("AUROPRINT_ERROR", e.message, e.stackTraceToString())
         }
     }
 

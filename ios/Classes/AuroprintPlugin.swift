@@ -30,54 +30,60 @@ public class AuroprintPlugin: NSObject, FlutterPlugin {
     }
 
     private func generateAuroprint(result: @escaping FlutterResult) {
-        do {
-            // Ensure key exists
-            try ensureKeyExists()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                // Ensure key exists
+                try self.ensureKeyExists()
 
-            // Get persistent device ID
-            let deviceId = getDeviceId()
+                // Get persistent device ID
+                let deviceId = self.getDeviceId()
 
-            // Generate timestamp and nonce
-            let timestamp = Int(Date().timeIntervalSince1970)
-            let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                // Generate timestamp and nonce
+                let timestamp = Int(Date().timeIntervalSince1970)
+                let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
 
-            // Create payload
-            let payload: [String: Any] = [
-                "did": deviceId,
-                "ts": timestamp,
-                "nonce": nonce
-            ]
-            let payloadData = try JSONSerialization.data(withJSONObject: payload)
-            let payloadString = String(data: payloadData, encoding: .utf8)!
+                // Create payload
+                let payload: [String: Any] = [
+                    "did": deviceId,
+                    "ts": timestamp,
+                    "nonce": nonce
+                ]
+                let payloadData = try JSONSerialization.data(withJSONObject: payload)
+                let payloadString = String(data: payloadData, encoding: .utf8)!
 
-            // Sign the payload
-            let signature = try signPayload(payloadString)
+                // Sign the payload
+                let signature = try self.signPayload(payloadString)
 
-            // Get public key
-            let publicKey = try getPublicKeyPem()
+                // Get public key
+                let publicKey = try self.getPublicKeyPem()
 
-            // iOS doesn't have attestation chain like Android
-            // For iOS attestation, you'd use DeviceCheck or App Attest
-            let attestationChain: [String] = []
+                // iOS doesn't have attestation chain like Android
+                // For iOS attestation, you'd use DeviceCheck or App Attest
+                let attestationChain: [String] = []
 
-            let response: [String: Any] = [
-                "deviceId": deviceId,
-                "payload": payloadString,
-                "signature": signature,
-                "publicKey": publicKey,
-                "attestationChain": attestationChain,
-                "timestamp": timestamp,
-                "nonce": nonce,
-                "isHardwareBacked": isSecureEnclaveAvailable()
-            ]
+                let response: [String: Any] = [
+                    "deviceId": deviceId,
+                    "payload": payloadString,
+                    "signature": signature,
+                    "publicKey": publicKey,
+                    "attestationChain": attestationChain,
+                    "timestamp": timestamp,
+                    "nonce": nonce,
+                    "isHardwareBacked": self.isSecureEnclaveAvailable()
+                ]
 
-            result(response)
-        } catch {
-            result(FlutterError(
-                code: "AUROPRINT_ERROR",
-                message: error.localizedDescription,
-                details: nil
-            ))
+                DispatchQueue.main.async {
+                    result(response)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    result(FlutterError(
+                        code: "AUROPRINT_ERROR",
+                        message: error.localizedDescription,
+                        details: nil
+                    ))
+                }
+            }
         }
     }
 
