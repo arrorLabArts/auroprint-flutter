@@ -5,6 +5,7 @@ import android.media.MediaDrm
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.security.keystore.StrongBoxUnavailableException
 import android.util.Base64
 import com.google.android.play.core.integrity.IntegrityManagerFactory
 import com.google.android.play.core.integrity.IntegrityTokenRequest
@@ -141,12 +142,32 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
             builder.setAttestationChallenge(challenge)
         }
 
-        // Prefer StrongBox if available (API 28+)
+        // Try StrongBox first (API 28+), fall back to TEE if unavailable
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
                 builder.setIsStrongBoxBacked(true)
-            } catch (e: Exception) {
+                keyPairGenerator.initialize(builder.build())
+                keyPairGenerator.generateKeyPair()
+                return
+            } catch (e: StrongBoxUnavailableException) {
                 // StrongBox not available, fall back to TEE
+                val teeBuilder = KeyGenParameterSpec.Builder(
+                    KEY_ALIAS,
+                    KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
+                )
+                    .setDigests(KeyProperties.DIGEST_SHA256)
+                    .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+                    .setKeySize(2048)
+                    .setUserAuthenticationRequired(false)
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    val challenge = "auroprint_attestation_${System.currentTimeMillis()}".toByteArray()
+                    teeBuilder.setAttestationChallenge(challenge)
+                }
+
+                keyPairGenerator.initialize(teeBuilder.build())
+                keyPairGenerator.generateKeyPair()
+                return
             }
         }
 
