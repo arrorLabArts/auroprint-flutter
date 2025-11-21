@@ -39,7 +39,7 @@ final requestBody = {
 ## Play Integrity API (Android)
 
 Detects rooted devices, Frida hooking, and verifies app authenticity.
-
+ 
 ### Setup
 
 1. Enable Play Integrity API in [Google Cloud Console](https://console.cloud.google.com/apis/library/playintegrity.googleapis.com)
