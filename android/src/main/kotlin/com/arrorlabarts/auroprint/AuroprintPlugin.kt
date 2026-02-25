@@ -32,22 +32,28 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
     private val executor = Executors.newCachedThreadPool()
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // FIX: Guard async callbacks — if the engine detaches while a Play Integrity
+    // or Keystore operation is in-flight, calling result.success/error on the
+    // stale MethodChannel.Result will invoke a freed Dart FFI trampoline and
+    // crash with "Callback invoked after it has been deleted".
+    @Volatile private var isAttached = false
+
     companion object {
         private const val CHANNEL_NAME = "com.arrorlabarts.auroprint/channel"
         private const val KEY_ALIAS = "auroprint_signing_key"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
-
-        // Widevine UUID for MediaDRM
         private val WIDEVINE_UUID = UUID(-0x121074568629b532L, -0x5c37d8232ae2de13L)
     }
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
+        isAttached = true
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, CHANNEL_NAME)
         channel.setMethodCallHandler(this)
         context = flutterPluginBinding.applicationContext
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        isAttached = false
         channel.setMethodCallHandler(null)
     }
 
@@ -68,36 +74,25 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
     private fun generateAuroprint(result: Result) {
         executor.execute {
             try {
-                // Ensure key exists
                 ensureKeyExists()
-
-                // Get persistent device ID
                 val deviceId = getDeviceId()
-
-                // Generate timestamp and nonce
                 val timestamp = System.currentTimeMillis() / 1000
                 val nonce = UUID.randomUUID().toString().replace("-", "")
 
-                // Create payload
                 val payloadJson = JSONObject().apply {
                     put("did", deviceId)
                     put("ts", timestamp)
                     put("nonce", nonce)
                 }
                 val payload = payloadJson.toString()
-
-                // Sign the payload
                 val signature = signPayload(payload)
 
-                // Get public key and attestation chain
                 val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
                 keyStore.load(null)
                 val certificateChain = keyStore.getCertificateChain(KEY_ALIAS)
 
                 val publicKeyPem = certificateToPem(certificateChain[0])
                 val attestationChain = certificateChain.map { certificateToPem(it) }
-
-                // Check if hardware-backed
                 val isHardwareBacked = isKeyHardwareBacked()
 
                 val response = hashMapOf(
@@ -112,11 +107,11 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
                 )
 
                 mainHandler.post {
-                    result.success(response)
+                    if (isAttached) result.success(response)
                 }
             } catch (e: Exception) {
                 mainHandler.post {
-                    result.error("AUROPRINT_ERROR", e.message, e.stackTraceToString())
+                    if (isAttached) result.error("AUROPRINT_ERROR", e.message, e.stackTraceToString())
                 }
             }
         }
@@ -125,7 +120,6 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
     private fun ensureKeyExists() {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
         keyStore.load(null)
-
         if (!keyStore.containsAlias(KEY_ALIAS)) {
             generateSigningKey()
         }
@@ -146,14 +140,11 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
             .setKeySize(2048)
             .setUserAuthenticationRequired(false)
 
-        // Request attestation if available (API 24+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            // Use a challenge for attestation
             val challenge = "auroprint_attestation_${System.currentTimeMillis()}".toByteArray()
             builder.setAttestationChallenge(challenge)
         }
 
-        // Try StrongBox first (API 28+), fall back to TEE if unavailable
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
                 builder.setIsStrongBoxBacked(true)
@@ -161,7 +152,6 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
                 keyPairGenerator.generateKeyPair()
                 return
             } catch (e: StrongBoxUnavailableException) {
-                // StrongBox not available, fall back to TEE
                 val teeBuilder = KeyGenParameterSpec.Builder(
                     KEY_ALIAS,
                     KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
@@ -200,13 +190,8 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
     }
 
     private fun getDeviceId(): String {
-        // Combine multiple identifiers to create a composite device ID
-        // MediaDRM alone has ~2.5% collision rate, so we add device properties
-        // to make collisions virtually impossible
-
         val components = mutableListOf<String>()
 
-        // 1. MediaDRM ID (factory-provisioned, but can have collisions)
         try {
             val mediaDrmId = getMediaDrmId()
             if (mediaDrmId.isNotEmpty()) {
@@ -216,8 +201,6 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
             // MediaDRM not available
         }
 
-        // 2. Hardware properties (same for all users on device)
-        // These reduce collision probability dramatically
         components.addAll(listOf(
             Build.BOARD,
             Build.BOOTLOADER,
@@ -229,13 +212,11 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
             Build.PRODUCT
         ))
 
-        // Add SoC info for API 31+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             components.add(Build.SOC_MANUFACTURER)
             components.add(Build.SOC_MODEL)
         }
 
-        // 3. Display metrics (further differentiation)
         try {
             val displayMetrics = context.resources.displayMetrics
             components.add("${displayMetrics.widthPixels}x${displayMetrics.heightPixels}")
@@ -244,7 +225,6 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
             // Display info not available
         }
 
-        // Combine all components into a single hash
         val combined = components.joinToString("|")
         return hashString(combined)
     }
@@ -286,9 +266,6 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
             val certificate = keyStore.getCertificate(KEY_ALIAS) as? X509Certificate
                 ?: return false
 
-            // Check if the key is inside secure hardware by looking at attestation
-            // For a proper check, we'd parse the attestation extension
-            // This is a simplified check
             return certificate.publicKey != null
         } catch (e: Exception) {
             return false
@@ -297,7 +274,6 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
 
     private fun isHardwareBackedAvailable(result: Result) {
         try {
-            // Check if device supports hardware-backed keystore
             val available = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
             result.success(available)
         } catch (e: Exception) {
@@ -327,11 +303,9 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
         try {
             val integrityManager = IntegrityManagerFactory.create(context)
 
-            // Build the request
             val requestBuilder = IntegrityTokenRequest.builder()
                 .setNonce(nonce)
 
-            // Add cloud project number if provided (required for standard API requests)
             if (cloudProjectNumber != null) {
                 requestBuilder.setCloudProjectNumber(cloudProjectNumber)
             }
@@ -339,18 +313,24 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
             val integrityTokenResponse = integrityManager.requestIntegrityToken(requestBuilder.build())
 
             integrityTokenResponse.addOnSuccessListener { response ->
-                result.success(hashMapOf(
-                    "token" to response.token()
-                ))
+                if (isAttached) {
+                    result.success(hashMapOf(
+                        "token" to response.token()
+                    ))
+                }
             }.addOnFailureListener { exception ->
-                result.error(
-                    "INTEGRITY_ERROR",
-                    exception.message,
-                    exception.stackTraceToString()
-                )
+                if (isAttached) {
+                    result.error(
+                        "INTEGRITY_ERROR",
+                        exception.message,
+                        exception.stackTraceToString()
+                    )
+                }
             }
         } catch (e: Exception) {
-            result.error("AUROPRINT_ERROR", e.message, e.stackTraceToString())
+            if (isAttached) {
+                result.error("AUROPRINT_ERROR", e.message, e.stackTraceToString())
+            }
         }
     }
 }
