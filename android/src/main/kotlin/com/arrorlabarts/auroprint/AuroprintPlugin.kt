@@ -43,6 +43,21 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
         private const val KEY_ALIAS = "auroprint_signing_key"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private val WIDEVINE_UUID = UUID(-0x121074568629b532L, -0x5c37d8232ae2de13L)
+
+        // Persistent cache for the derived device ID. Once computed, the value
+        // is pinned for the lifetime of the install. Cleared by app uninstall
+        // or by the host explicitly clearing app data. The version key lets a
+        // future algorithm change force a recompute without ambiguity.
+        private const val DID_CACHE_PREFS = "auroprint_did_cache"
+        private const val DID_CACHE_KEY = "did"
+        private const val DID_CACHE_VERSION_KEY = "did_version"
+        private const val DID_CACHE_VERSION = 1
+
+        // Widevine ID retry: PROPERTY_DEVICE_UNIQUE_ID can throw transiently
+        // (resource busy, MediaDrm session pressure). Retry with light backoff
+        // before deciding the value is genuinely unreadable.
+        private const val WIDEVINE_RETRY_ATTEMPTS = 3
+        private const val WIDEVINE_RETRY_BASE_DELAY_MS = 100L
     }
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
@@ -190,20 +205,40 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
     }
 
     private fun getDeviceId(): String {
-        val components = mutableListOf<String>()
-
-        try {
-            val mediaDrmId = getMediaDrmId()
-            if (mediaDrmId.isNotEmpty()) {
-                components.add(mediaDrmId)
-            }
-        } catch (e: Exception) {
-            // MediaDRM not available
+        val prefs = context.getSharedPreferences(DID_CACHE_PREFS, Context.MODE_PRIVATE)
+        val cachedVersion = prefs.getInt(DID_CACHE_VERSION_KEY, -1)
+        val cachedDid = prefs.getString(DID_CACHE_KEY, null)
+        if (cachedVersion == DID_CACHE_VERSION && !cachedDid.isNullOrEmpty()) {
+            return cachedDid
         }
 
+        val components = mutableListOf<String>()
+
+        // Widevine inclusion is decided by whether the platform reports support
+        // for the scheme — a stable property that doesn't depend on transient
+        // provisioning state. When supported, the per-device unique ID is
+        // mandatory; we retry transient failures and throw if still unreadable
+        // rather than silently producing a different input set.
+        val supportsWidevine = try {
+            MediaDrm.isCryptoSchemeSupported(WIDEVINE_UUID)
+        } catch (e: Exception) {
+            false
+        }
+
+        if (supportsWidevine) {
+            val widevineId = readWidevineIdWithRetry()
+                ?: throw IllegalStateException(
+                    "Widevine reported supported but PROPERTY_DEVICE_UNIQUE_ID is unreadable"
+                )
+            components.add(widevineId)
+        }
+
+        // Hardware identifiers stable across the device's lifetime.
+        // Build.BOOTLOADER is omitted because it can change with vendor
+        // bootloader/firmware updates on some devices, which would shift
+        // the derived ID after a system OTA.
         components.addAll(listOf(
             Build.BOARD,
-            Build.BOOTLOADER,
             Build.BRAND,
             Build.DEVICE,
             Build.HARDWARE,
@@ -217,16 +252,41 @@ class AuroprintPlugin : FlutterPlugin, MethodCallHandler {
             components.add(Build.SOC_MODEL)
         }
 
-        try {
-            val displayMetrics = context.resources.displayMetrics
-            components.add("${displayMetrics.widthPixels}x${displayMetrics.heightPixels}")
-            components.add("${displayMetrics.densityDpi}")
-        } catch (e: Exception) {
-            // Display info not available
-        }
+        // displayMetrics is intentionally excluded: widthPixels/heightPixels
+        // swap on rotation, change in multi-window/picture-in-picture, and
+        // shift when an external display is attached. densityDpi changes with
+        // the user's display-size accessibility setting.
 
         val combined = components.joinToString("|")
-        return hashString(combined)
+        val did = hashString(combined)
+
+        prefs.edit()
+            .putString(DID_CACHE_KEY, did)
+            .putInt(DID_CACHE_VERSION_KEY, DID_CACHE_VERSION)
+            .apply()
+
+        return did
+    }
+
+    private fun readWidevineIdWithRetry(): String? {
+        for (attempt in 1..WIDEVINE_RETRY_ATTEMPTS) {
+            try {
+                val id = getMediaDrmId()
+                if (id.isNotEmpty()) return id
+            } catch (e: Exception) {
+                // Swallow and retry; final failure becomes a thrown error
+                // at the call site so the input set never silently changes.
+            }
+            if (attempt < WIDEVINE_RETRY_ATTEMPTS) {
+                try {
+                    Thread.sleep(WIDEVINE_RETRY_BASE_DELAY_MS * attempt)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return null
+                }
+            }
+        }
+        return null
     }
 
     private fun getMediaDrmId(): String {
